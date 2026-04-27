@@ -3,6 +3,10 @@ const { OpenAI, toFile } = require('openai');
 const { google } = require('googleapis');
 const twilio = require('twilio');
 
+const BUSINESS_PHONE = '+15613003523';
+const VOICEMAILS_SHEET_NAME = 'Voicemails';
+const LEADS_SHEET_NAME = 'Leads';
+
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
@@ -16,8 +20,21 @@ const PORT = process.env.PORT || 3000;
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-const VOICEMAILS_SHEET_NAME = 'Voicemails';
-const LEADS_SHEET_NAME = 'Leads';
+function cleanPhone(value) {
+  if (!value) return 'Unknown';
+  const phone = String(value).trim();
+  if (!phone || phone.toLowerCase() === 'unknown') return 'Unknown';
+  return phone;
+}
+
+function pickBestPhone(twilioPhone, aiPhone) {
+  const cleanTwilioPhone = cleanPhone(twilioPhone);
+  const cleanAiPhone = cleanPhone(aiPhone);
+
+  if (cleanTwilioPhone !== 'Unknown') return cleanTwilioPhone;
+  if (cleanAiPhone !== 'Unknown') return cleanAiPhone;
+  return 'Unknown';
+}
 
 function getGoogleAuth() {
   return new google.auth.JWT({
@@ -49,16 +66,20 @@ function timestampNow() {
 
 async function sendAutoText(toPhone) {
   try {
-    if (!toPhone || toPhone === 'Unknown') return;
+    const safePhone = cleanPhone(toPhone);
+    if (safePhone === 'Unknown') {
+      console.log('Auto text skipped: no caller phone available');
+      return;
+    }
 
     await twilioClient.messages.create({
       body:
-        "Hey, this is Fields Functionality. Thank you for reaching out. We got your message and will follow up with the right next step soon. Have an awesome day in the meantime!",
-      from: '+15613003523',
-      to: toPhone,
+        'Hey, this is Fields Functionality. Thank you for reaching out. We got your message and will follow up with the right next step soon. Have an awesome day in the meantime!',
+      from: BUSINESS_PHONE,
+      to: safePhone,
     });
 
-    console.log('Auto text sent to:', toPhone);
+    console.log('Auto text sent to:', safePhone);
   } catch (error) {
     console.error('Auto text failed:', error.message);
   }
@@ -79,6 +100,7 @@ app.post('/twilio/voicemail', (req, res) => {
     Hey, this is Fields Functionality, a gymnastics skill lab for competitive athletes and adults.
     We focus on skill development, breakdowns, and structured progressions across tumbling, handstands, rings, and strength work.
     We missed your call. Please leave your name, what skill you're working on, and the best time to reach you.
+    If you want us to call a different number, please include that too.
     We'll review your message and follow up with the right next step.
   </Say>
   <Record
@@ -97,7 +119,7 @@ app.post('/twilio/voicemail-recording', async (req, res) => {
     console.log('Twilio recording webhook hit');
     console.log('Recording body:', req.body);
 
-    const callerPhone = req.body.From || req.body.Caller || 'Unknown';
+    const twilioCallerPhone = req.body.From || req.body.Caller || 'Unknown';
     const recordingUrl = req.body.RecordingUrl;
 
     if (!recordingUrl) {
@@ -175,8 +197,8 @@ Competitive Team Leads
 Other / Unsure
 
 Rules:
-- If caller phone is available, use it as phone.
-- If the caller says a different callback number, use the number they said in the voicemail.
+- The backend will use the Twilio caller ID as the primary phone number.
+- Only use a phone number from the voicemail if the caller clearly says they want a different callback number.
 - If name is missing, use "Unknown".
 - If availability or preferred times are missing, use "Unknown".
 - If athlete name or age is missing, use "Unknown".
@@ -194,7 +216,8 @@ Rules:
         {
           role: 'user',
           content: `
-Caller phone from Twilio: ${callerPhone}
+Twilio caller phone:
+${twilioCallerPhone}
 
 Transcript:
 ${transcript}
@@ -203,11 +226,19 @@ ${transcript}
       ],
     });
 
-    const lead = JSON.parse(extraction.choices[0].message.content);
+    let lead = {};
+    try {
+      lead = JSON.parse(extraction.choices[0].message.content);
+    } catch (parseError) {
+      console.error('Lead JSON parse failed:', parseError.message);
+      lead = {};
+    }
+
+    const finalPhone = pickBestPhone(twilioCallerPhone, lead.phone);
 
     const finalLead = {
       name: lead.name || 'Unknown',
-      phone: lead.phone || callerPhone || 'Unknown',
+      phone: finalPhone,
       category: lead.category || lead.skill || 'General inquiry',
       specific_interest:
         lead.specific_interest || lead.skill || 'General inquiry',
@@ -223,6 +254,7 @@ ${transcript}
       transcript,
     };
 
+    console.log('FINAL PHONE USED:', finalLead.phone);
     console.log('STRUCTURED LEAD:', finalLead);
 
     const time = timestampNow();
