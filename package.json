@@ -8,6 +8,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "googleapis": "^171.4.0",
-    "openai": "^6.34.0"
+    "openai": "^6.34.0",
+    "twilio": "^6.0.0"
   }
 }
