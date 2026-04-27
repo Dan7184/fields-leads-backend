@@ -10,7 +10,8 @@ const PORT = process.env.PORT || 3000;
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-const SHEET_NAME = 'Voicemails';
+const VOICEMAILS_SHEET_NAME = 'Voicemails';
+const LEADS_SHEET_NAME = 'Leads';
 
 function getGoogleAuth() {
   return new google.auth.JWT({
@@ -20,31 +21,23 @@ function getGoogleAuth() {
   });
 }
 
-async function addLeadToSheet(lead) {
+async function appendToSheet(sheetName, values) {
   const auth = getGoogleAuth();
   const sheets = google.sheets({ version: 'v4', auth });
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `${SHEET_NAME}!A:K`,
+    range: `${sheetName}!A:K`,
     valueInputOption: 'USER_ENTERED',
     requestBody: {
-      values: [
-        [
-          new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
-          lead.name || 'Unknown',
-          lead.phone || 'Unknown',
-          lead.skill || 'General inquiry',
-          lead.availability || 'Unknown',
-          lead.person_type || 'Other / Unsure',
-          lead.athlete_name || 'Unknown',
-          lead.athlete_age || 'Unknown',
-          lead.department || 'Other / Unsure',
-          lead.notes || '',
-          lead.transcript || '',
-        ],
-      ],
+      values: [values],
     },
+  });
+}
+
+function timestampNow() {
+  return new Date().toLocaleString('en-US', {
+    timeZone: 'America/New_York',
   });
 }
 
@@ -128,12 +121,16 @@ Return ONLY valid JSON with these fields:
 {
   "name": "",
   "phone": "",
+  "category": "",
+  "specific_interest": "",
   "skill": "",
   "availability": "",
+  "preferred_times": "",
   "person_type": "",
   "athlete_name": "",
   "athlete_age": "",
   "department": "",
+  "urgency": "",
   "notes": ""
 }
 
@@ -152,20 +149,25 @@ Other / Unsure
 
 Rules:
 - If caller phone is available, use it as phone.
+- If the caller says a different callback number, use the number they said in the voicemail.
 - If name is missing, use "Unknown".
-- If availability is missing, use "Unknown".
+- If availability or preferred times are missing, use "Unknown".
 - If athlete name or age is missing, use "Unknown".
 - If skill is unclear, use "General inquiry".
+- If category is unclear, use "General inquiry".
+- If specific_interest is unclear, use the best short summary of what they asked for.
 - If department is unclear, use "Other / Unsure".
-- Tumbling includes back tuck, back handspring, flips, tumbling.
-- Strength Skills includes handstands, rings, calisthenics, strength skills.
-- Competitive Team includes competitive gymnastics, cheer, acro, dance.
+- If urgency is not obvious, use "Normal".
+- Tumbling includes back tuck, back handspring, flips, tumbling, aerials, handsprings, roundoffs.
+- Strength Skills includes handstands, rings, calisthenics, strength skills, bodyweight strength.
+- Competitive Team includes competitive gymnastics, cheer, acro, dance, team athlete, meet season, routines.
+- Notes should be a short useful summary for a coach.
           `.trim(),
         },
         {
           role: 'user',
           content: `
-Caller phone: ${callerPhone}
+Caller phone from Twilio: ${callerPhone}
 
 Transcript:
 ${transcript}
@@ -175,14 +177,64 @@ ${transcript}
     });
 
     const lead = JSON.parse(extraction.choices[0].message.content);
-    lead.phone = lead.phone || callerPhone;
-    lead.transcript = transcript;
 
-    console.log('STRUCTURED LEAD:', lead);
+    const finalLead = {
+      name: lead.name || 'Unknown',
+      phone: lead.phone || callerPhone || 'Unknown',
+      category: lead.category || lead.skill || 'General inquiry',
+      specific_interest:
+        lead.specific_interest || lead.skill || 'General inquiry',
+      skill: lead.skill || lead.specific_interest || 'General inquiry',
+      availability:
+        lead.availability || lead.preferred_times || 'Unknown',
+      preferred_times:
+        lead.preferred_times || lead.availability || 'Unknown',
+      person_type: lead.person_type || 'Other / Unsure',
+      athlete_name: lead.athlete_name || 'Unknown',
+      athlete_age: lead.athlete_age || 'Unknown',
+      department: lead.department || 'Other / Unsure',
+      urgency: lead.urgency || 'Normal',
+      notes: lead.notes || '',
+      transcript,
+    };
 
-    await addLeadToSheet(lead);
+    console.log('STRUCTURED LEAD:', finalLead);
 
-    console.log('Lead added to Google Sheet');
+    const time = timestampNow();
+
+    // Voicemails tab: raw intake archive
+    await appendToSheet(VOICEMAILS_SHEET_NAME, [
+      time,
+      finalLead.name,
+      finalLead.phone,
+      finalLead.skill,
+      finalLead.availability,
+      finalLead.person_type,
+      finalLead.athlete_name,
+      finalLead.athlete_age,
+      finalLead.department,
+      finalLead.notes,
+      finalLead.transcript,
+    ]);
+
+    console.log('Lead added to Voicemails sheet');
+
+    // Leads tab: clean coach-facing board
+    await appendToSheet(LEADS_SHEET_NAME, [
+      time,
+      finalLead.name,
+      finalLead.phone,
+      finalLead.category,
+      finalLead.specific_interest,
+      finalLead.person_type,
+      finalLead.preferred_times,
+      finalLead.notes,
+      finalLead.urgency,
+      finalLead.department,
+      'New',
+    ]);
+
+    console.log('Lead added to Leads sheet');
 
     res.sendStatus(200);
   } catch (error) {
