@@ -53,7 +53,7 @@ async function sendAutoText(toPhone) {
 
     await twilioClient.messages.create({
       body:
-        "Hey, this is Fields Functionality, Thank you for reach out! We got your message and follow up with the right next step soon. Have an awesome Day in the meantime!",
+        "Hey, this is Fields Functionality, Thank you for reach out! We got your message and follow up with the right next step soon Have an awesome Day in the meantime!",
       from: '+15613003523',
       to: toPhone,
     });
@@ -117,17 +117,14 @@ app.post('/twilio/voicemail-recording', async (req, res) => {
       throw new Error(`Failed to download recording: ${audioResponse.status}`);
     }
 
-    const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+
+const audioBlob = new Blob([audioBuffer], { type: 'audio/mpeg' });
 
 const transcription = await openai.audio.transcriptions.create({
   model: 'gpt-4o-mini-transcribe',
-  file: Buffer.from(audioBuffer),
+  file: audioBlob,
 });
-
-    const transcription = await openai.audio.transcriptions.create({
-      model: 'gpt-4o-mini-transcribe',
-      file: audioFile,
-    });
 
     const transcript = transcription.text || '';
     console.log('TRANSCRIPT:', transcript);
