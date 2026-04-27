@@ -1,6 +1,12 @@
 const express = require('express');
 const { OpenAI } = require('openai');
 const { google } = require('googleapis');
+const twilio = require('twilio');
+
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
 
 const app = express();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -35,10 +41,27 @@ async function appendToSheet(sheetName, values) {
   });
 }
 
-function timestampNow() {
+function timestampNow() { 
   return new Date().toLocaleString('en-US', {
     timeZone: 'America/New_York',
   });
+}
+
+async function sendAutoText(toPhone) {
+  try {
+    if (!toPhone || toPhone === 'Unknown') return;
+
+    await twilioClient.messages.create({
+      body:
+        "Hey, this is Fields Functionality, Thank you for reach out! We got your message and follow up with the right next step soon. Have an awesome Day in the meantime!",
+      from: '+15613003523',
+      to: toPhone,
+    });
+
+    console.log('Auto text sent to:', toPhone);
+  } catch (error) {
+    console.error('Auto text failed:', error.message);
+  }
 }
 
 app.get('/health', (req, res) => {
@@ -96,9 +119,10 @@ app.post('/twilio/voicemail-recording', async (req, res) => {
 
     const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
 
-    const audioFile = new File([audioBuffer], 'voicemail.mp3', {
-      type: 'audio/mpeg',
-    });
+const transcription = await openai.audio.transcriptions.create({
+  model: 'gpt-4o-mini-transcribe',
+  file: Buffer.from(audioBuffer),
+});
 
     const transcription = await openai.audio.transcriptions.create({
       model: 'gpt-4o-mini-transcribe',
@@ -235,6 +259,7 @@ ${transcript}
     ]);
 
     console.log('Lead added to Leads sheet');
+    await sendAutoText(finalLead.phone);
 
     res.sendStatus(200);
   } catch (error) {
