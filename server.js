@@ -1,5 +1,5 @@
 const express = require('express');
-const { OpenAI } = require('openai');
+const { OpenAI, toFile } = require('openai');
 const { google } = require('googleapis');
 const twilio = require('twilio');
 
@@ -41,7 +41,7 @@ async function appendToSheet(sheetName, values) {
   });
 }
 
-function timestampNow() { 
+function timestampNow() {
   return new Date().toLocaleString('en-US', {
     timeZone: 'America/New_York',
   });
@@ -53,7 +53,7 @@ async function sendAutoText(toPhone) {
 
     await twilioClient.messages.create({
       body:
-        "Hey, this is Fields Functionality, Thank you for reach out! We got your message and follow up with the right next step soon Have an awesome Day in the meantime!",
+        "Hey, this is Fields Functionality. Thank you for reaching out. We got your message and will follow up with the right next step soon. Have an awesome day in the meantime!",
       from: '+15613003523',
       to: toPhone,
     });
@@ -99,8 +99,12 @@ app.post('/twilio/voicemail-recording', async (req, res) => {
 
     const callerPhone = req.body.From || req.body.Caller || 'Unknown';
     const recordingUrl = req.body.RecordingUrl;
-    const recordingMp3Url = `${recordingUrl}.mp3`;
 
+    if (!recordingUrl) {
+      throw new Error('Missing RecordingUrl from Twilio');
+    }
+
+    const recordingMp3Url = `${recordingUrl}.mp3`;
     console.log('Downloading recording:', recordingMp3Url);
 
     const audioResponse = await fetch(recordingMp3Url, {
@@ -117,14 +121,16 @@ app.post('/twilio/voicemail-recording', async (req, res) => {
       throw new Error(`Failed to download recording: ${audioResponse.status}`);
     }
 
-const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+    const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
 
-const audioBlob = new Blob([audioBuffer], { type: 'audio/mpeg' });
+    const audioFile = await toFile(audioBuffer, 'voicemail.mp3', {
+      type: 'audio/mpeg',
+    });
 
-const transcription = await openai.audio.transcriptions.create({
-  model: 'gpt-4o-mini-transcribe',
-  file: audioBlob,
-});
+    const transcription = await openai.audio.transcriptions.create({
+      model: 'gpt-4o-mini-transcribe',
+      file: audioFile,
+    });
 
     const transcript = transcription.text || '';
     console.log('TRANSCRIPT:', transcript);
@@ -206,10 +212,8 @@ ${transcript}
       specific_interest:
         lead.specific_interest || lead.skill || 'General inquiry',
       skill: lead.skill || lead.specific_interest || 'General inquiry',
-      availability:
-        lead.availability || lead.preferred_times || 'Unknown',
-      preferred_times:
-        lead.preferred_times || lead.availability || 'Unknown',
+      availability: lead.availability || lead.preferred_times || 'Unknown',
+      preferred_times: lead.preferred_times || lead.availability || 'Unknown',
       person_type: lead.person_type || 'Other / Unsure',
       athlete_name: lead.athlete_name || 'Unknown',
       athlete_age: lead.athlete_age || 'Unknown',
@@ -223,7 +227,6 @@ ${transcript}
 
     const time = timestampNow();
 
-    // Voicemails tab: raw intake archive
     await appendToSheet(VOICEMAILS_SHEET_NAME, [
       time,
       finalLead.name,
@@ -240,7 +243,6 @@ ${transcript}
 
     console.log('Lead added to Voicemails sheet');
 
-    // Leads tab: clean coach-facing board
     await appendToSheet(LEADS_SHEET_NAME, [
       time,
       finalLead.name,
@@ -256,6 +258,7 @@ ${transcript}
     ]);
 
     console.log('Lead added to Leads sheet');
+
     await sendAutoText(finalLead.phone);
 
     res.sendStatus(200);
